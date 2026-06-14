@@ -1,0 +1,80 @@
+name: Supabase Keep Alive
+
+on:
+  schedule:
+    # Roda a cada 3 dias às 09:00 UTC.
+    # No horário de São Paulo, normalmente fica por volta de 06:00.
+    - cron: "0 9 */3 * *"
+
+  # Permite rodar manualmente pelo botão "Run workflow"
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Acessar projetos Supabase
+        env:
+          SUPABASE_PROJECTS: ${{ secrets.SUPABASE_PROJECTS }}
+        run: |
+          node <<'NODE'
+          const projects = JSON.parse(process.env.SUPABASE_PROJECTS || "[]");
+
+          if (!Array.isArray(projects) || projects.length === 0) {
+            throw new Error("SUPABASE_PROJECTS precisa ser um array JSON com pelo menos 1 projeto.");
+          }
+
+          let failed = 0;
+
+          for (const project of projects) {
+            const name = project.name || "sem-nome";
+            const url = String(project.url || "").replace(/\/$/, "");
+            const anonKey = project.anonKey;
+            const bucket = project.bucket;
+
+            if (!url || !anonKey || !bucket) {
+              console.error(`❌ ${name}: faltando url, anonKey ou bucket.`);
+              failed++;
+              continue;
+            }
+
+            const endpoint = `${url}/storage/v1/object/list/${encodeURIComponent(bucket)}`;
+
+            try {
+              const response = await fetch(endpoint, {
+                method: "POST",
+                headers: {
+                  "apikey": anonKey,
+                  "Authorization": `Bearer ${anonKey}`,
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                  limit: 1,
+                  offset: 0
+                })
+              });
+
+              const text = await response.text();
+
+              if (response.ok) {
+                console.log(`✅ ${name}: acesso OK no bucket "${bucket}".`);
+              } else {
+                console.error(`❌ ${name}: erro HTTP ${response.status}.`);
+                console.error(text);
+                failed++;
+              }
+            } catch (error) {
+              console.error(`❌ ${name}: falha ao acessar.`);
+              console.error(error);
+              failed++;
+            }
+          }
+
+          if (failed > 0) {
+            throw new Error(`${failed} projeto(s) falharam.`);
+          }
+
+          console.log("✅ Todos os projetos foram acessados com sucesso.");
+          NODE
