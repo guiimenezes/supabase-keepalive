@@ -2,8 +2,6 @@ name: Supabase Keep Alive
 
 on:
   schedule:
-    # Segunda e quinta às 09:00 UTC.
-    # No Brasil, geralmente de manhã.
     - cron: "0 9 * * 1,4"
 
   workflow_dispatch:
@@ -70,6 +68,7 @@ jobs:
                     "Content-Type": "application/json"
                   },
                   body: JSON.stringify({
+                    prefix: "",
                     limit: 1,
                     offset: 0
                   })
