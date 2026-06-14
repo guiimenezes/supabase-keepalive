@@ -2,20 +2,19 @@ name: Supabase Keep Alive
 
 on:
   schedule:
-    # Roda a cada 3 dias às 09:00 UTC.
-    # No horário de São Paulo, normalmente fica por volta de 06:00.
-    - cron: "0 9 */3 * *"
+    # Segunda e quinta às 09:00 UTC.
+    # No Brasil, geralmente de manhã.
+    - cron: "0 9 * * 1,4"
 
-  # Permite rodar manualmente pelo botão "Run workflow"
   workflow_dispatch:
 
 jobs:
   keepalive:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-      - name: Acessar projetos Supabase
+      - name: Acessar projetos e buckets Supabase
         env:
           SUPABASE_PROJECTS: ${{ secrets.SUPABASE_PROJECTS }}
         run: |
@@ -27,54 +26,77 @@ jobs:
           }
 
           let failed = 0;
+          let skipped = 0;
+          let success = 0;
 
           for (const project of projects) {
             const name = project.name || "sem-nome";
             const url = String(project.url || "").replace(/\/$/, "");
             const anonKey = project.anonKey;
-            const bucket = project.bucket;
 
-            if (!url || !anonKey || !bucket) {
-              console.error(`❌ ${name}: faltando url, anonKey ou bucket.`);
+            const buckets = Array.isArray(project.buckets)
+              ? project.buckets
+              : project.bucket
+                ? [project.bucket]
+                : [];
+
+            if (!url) {
+              console.error(`❌ ${name}: faltando url.`);
               failed++;
               continue;
             }
 
-            const endpoint = `${url}/storage/v1/object/list/${encodeURIComponent(bucket)}`;
+            if (!anonKey) {
+              console.warn(`⚠️ ${name}: sem anonKey/publishable key. Projeto ignorado.`);
+              skipped++;
+              continue;
+            }
 
-            try {
-              const response = await fetch(endpoint, {
-                method: "POST",
-                headers: {
-                  "apikey": anonKey,
-                  "Authorization": `Bearer ${anonKey}`,
-                  "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                  limit: 1,
-                  offset: 0
-                })
-              });
+            if (buckets.length === 0) {
+              console.warn(`⚠️ ${name}: nenhum bucket informado. Projeto ignorado.`);
+              skipped++;
+              continue;
+            }
 
-              const text = await response.text();
+            for (const bucket of buckets) {
+              const endpoint = `${url}/storage/v1/object/list/${encodeURIComponent(bucket)}`;
 
-              if (response.ok) {
-                console.log(`✅ ${name}: acesso OK no bucket "${bucket}".`);
-              } else {
-                console.error(`❌ ${name}: erro HTTP ${response.status}.`);
-                console.error(text);
+              try {
+                const response = await fetch(endpoint, {
+                  method: "POST",
+                  headers: {
+                    "apikey": anonKey,
+                    "Authorization": `Bearer ${anonKey}`,
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify({
+                    limit: 1,
+                    offset: 0
+                  })
+                });
+
+                const text = await response.text();
+
+                if (response.ok) {
+                  console.log(`✅ ${name} / ${bucket}: OK`);
+                  success++;
+                } else {
+                  console.error(`❌ ${name} / ${bucket}: HTTP ${response.status}`);
+                  console.error(text);
+                  failed++;
+                }
+              } catch (error) {
+                console.error(`❌ ${name} / ${bucket}: falha ao acessar.`);
+                console.error(error);
                 failed++;
               }
-            } catch (error) {
-              console.error(`❌ ${name}: falha ao acessar.`);
-              console.error(error);
-              failed++;
             }
           }
 
-          if (failed > 0) {
-            throw new Error(`${failed} projeto(s) falharam.`);
-          }
+          console.log("");
+          console.log(`Resumo: ${success} acesso(s) OK, ${skipped} ignorado(s), ${failed} erro(s).`);
 
-          console.log("✅ Todos os projetos foram acessados com sucesso.");
+          if (failed > 0) {
+            process.exit(1);
+          }
           NODE
