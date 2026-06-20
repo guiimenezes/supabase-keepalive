@@ -12,6 +12,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Usar Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Instalar Supabase JS
         run: npm install @supabase/supabase-js
 
@@ -22,124 +27,132 @@ jobs:
           node <<'NODE'
           const { createClient } = require("@supabase/supabase-js");
 
-          const projects = JSON.parse(process.env.SUPABASE_PROJECTS || "[]");
+          async function main() {
+            const projects = JSON.parse(process.env.SUPABASE_PROJECTS || "[]");
 
-          if (!Array.isArray(projects) || projects.length === 0) {
-            throw new Error("SUPABASE_PROJECTS precisa ser um array JSON com pelo menos 1 projeto.");
-          }
-
-          let failed = 0;
-          let skipped = 0;
-          let success = 0;
-
-          function ok(message) {
-            console.log(`OK ${message}`);
-            success++;
-          }
-
-          function warn(message) {
-            console.warn(`AVISO ${message}`);
-            skipped++;
-          }
-
-          function fail(message, error) {
-            console.error(`ERRO ${message}`);
-
-            if (error) {
-              console.error(JSON.stringify(error, null, 2));
+            if (!Array.isArray(projects) || projects.length === 0) {
+              throw new Error("SUPABASE_PROJECTS precisa ser um array JSON com pelo menos 1 projeto.");
             }
 
-            failed++;
-          }
+            let failed = 0;
+            let skipped = 0;
+            let success = 0;
 
-          for (const project of projects) {
-            const name = project.name || "sem-nome";
-            const url = String(project.url || "").replace(/\/$/, "");
-            const anonKey = project.anonKey;
-
-            const buckets = Array.isArray(project.buckets)
-              ? project.buckets
-              : project.bucket
-                ? [project.bucket]
-                : [];
-
-            if (!url) {
-              fail(`${name}: faltando url.`);
-              continue;
+            function ok(message) {
+              console.log(`OK ${message}`);
+              success++;
             }
 
-            if (!anonKey) {
-              warn(`${name}: sem anonKey/publishable key. Projeto ignorado.`);
-              continue;
+            function warn(message) {
+              console.warn(`AVISO ${message}`);
+              skipped++;
             }
 
-            if (buckets.length === 0) {
-              warn(`${name}: nenhum bucket informado. Projeto ignorado.`);
-              continue;
-            }
+            function fail(message, error) {
+              console.error(`ERRO ${message}`);
 
-            const supabase = createClient(url, anonKey, {
-              auth: {
-                persistSession: false,
-                autoRefreshToken: false
+              if (error) {
+                console.error(JSON.stringify(error, null, 2));
               }
-            });
 
-            for (const bucket of buckets) {
-              const fileName = `keepalive-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
-              const filePath = `_keepalive/${fileName}`;
-              const fileContent = `keepalive ${name} / ${bucket} / ${new Date().toISOString()}`;
+              failed++;
+            }
 
-              try {
-                const { error: uploadError } = await supabase
-                  .storage
-                  .from(bucket)
-                  .upload(filePath, fileContent, {
-                    contentType: "text/plain",
-                    upsert: false
-                  });
+            for (const project of projects) {
+              const name = project.name || "sem-nome";
+              const url = String(project.url || "").replace(/\/$/, "");
+              const anonKey = project.anonKey;
 
-                if (uploadError) {
-                  fail(`${name} / ${bucket}: falha ao criar arquivo.`, uploadError);
-                  continue;
-                }
+              const buckets = Array.isArray(project.buckets)
+                ? project.buckets
+                : project.bucket
+                  ? [project.bucket]
+                  : [];
 
-                ok(`${name} / ${bucket}: arquivo criado.`);
-
-                const { error: listError } = await supabase
-                  .storage
-                  .from(bucket)
-                  .list("_keepalive", {
-                    limit: 1,
-                    offset: 0
-                  });
-
-                if (listError) {
-                  fail(`${name} / ${bucket}: falha ao listar pasta _keepalive.`, listError);
-                } else {
-                  ok(`${name} / ${bucket}: pasta _keepalive listada.`);
-                }
-
-                const { error: removeError } = await supabase
-                  .storage
-                  .from(bucket)
-                  .remove([filePath]);
-
-                if (removeError) {
-                  fail(`${name} / ${bucket}: arquivo criado, mas falhou ao apagar.`, removeError);
-                } else {
-                  ok(`${name} / ${bucket}: arquivo apagado.`);
-                }
-              } catch (error) {
-                fail(`${name} / ${bucket}: falha inesperada.`, error);
+              if (!url) {
+                fail(`${name}: faltando url.`);
+                continue;
               }
+
+              if (!anonKey) {
+                warn(`${name}: sem anonKey/publishable key. Projeto ignorado.`);
+                continue;
+              }
+
+              if (buckets.length === 0) {
+                warn(`${name}: nenhum bucket informado. Projeto ignorado.`);
+                continue;
+              }
+
+              const supabase = createClient(url, anonKey, {
+                auth: {
+                  persistSession: false,
+                  autoRefreshToken: false
+                }
+              });
+
+              for (const bucket of buckets) {
+                const fileName = `keepalive-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+                const filePath = `_keepalive/${fileName}`;
+                const fileContent = `keepalive ${name} / ${bucket} / ${new Date().toISOString()}`;
+
+                try {
+                  const { error: uploadError } = await supabase
+                    .storage
+                    .from(bucket)
+                    .upload(filePath, fileContent, {
+                      contentType: "text/plain",
+                      upsert: false
+                    });
+
+                  if (uploadError) {
+                    fail(`${name} / ${bucket}: falha ao criar arquivo.`, uploadError);
+                    continue;
+                  }
+
+                  ok(`${name} / ${bucket}: arquivo criado.`);
+
+                  const { error: listError } = await supabase
+                    .storage
+                    .from(bucket)
+                    .list("_keepalive", {
+                      limit: 1,
+                      offset: 0
+                    });
+
+                  if (listError) {
+                    fail(`${name} / ${bucket}: falha ao listar pasta _keepalive.`, listError);
+                  } else {
+                    ok(`${name} / ${bucket}: pasta _keepalive listada.`);
+                  }
+
+                  const { error: removeError } = await supabase
+                    .storage
+                    .from(bucket)
+                    .remove([filePath]);
+
+                  if (removeError) {
+                    fail(`${name} / ${bucket}: arquivo criado, mas falhou ao apagar.`, removeError);
+                  } else {
+                    ok(`${name} / ${bucket}: arquivo apagado.`);
+                  }
+                } catch (error) {
+                  fail(`${name} / ${bucket}: falha inesperada.`, error);
+                }
+              }
+            }
+
+            console.log("");
+            console.log(`Resumo: ${success} operação(ões) OK, ${skipped} ignorado(s), ${failed} erro(s).`);
+
+            if (failed > 0) {
+              process.exit(1);
             }
           }
 
-          console.log("");
-          console.log(`Resumo: ${success} operação(ões) OK, ${skipped} ignorado(s), ${failed} erro(s).`);
-
-          if (failed > 0) {
+          main().catch((error) => {
+            console.error("ERRO GERAL:");
+            console.error(error);
             process.exit(1);
-          }
+          });
           NODE
