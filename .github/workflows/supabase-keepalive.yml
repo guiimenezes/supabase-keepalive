@@ -12,11 +12,16 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Acessar projetos e buckets Supabase
+      - name: Instalar Supabase JS
+        run: npm install @supabase/supabase-js
+
+      - name: Manter projetos Supabase ativos
         env:
           SUPABASE_PROJECTS: ${{ secrets.SUPABASE_PROJECTS }}
         run: |
           node <<'NODE'
+          const { createClient } = require("@supabase/supabase-js");
+
           const projects = JSON.parse(process.env.SUPABASE_PROJECTS || "[]");
 
           if (!Array.isArray(projects) || projects.length === 0) {
@@ -26,6 +31,22 @@ jobs:
           let failed = 0;
           let skipped = 0;
           let success = 0;
+
+          function logOk(message) {
+            console.log(`OK ${message}`);
+            success++;
+          }
+
+          function logError(message, error) {
+            console.error(`ERRO ${message}`);
+            if (error) console.error(error);
+            failed++;
+          }
+
+          function logSkip(message) {
+            console.warn(`AVISO ${message}`);
+            skipped++;
+          }
 
           for (const project of projects) {
             const name = project.name || "sem-nome";
@@ -38,62 +59,105 @@ jobs:
                 ? [project.bucket]
                 : [];
 
+            const tables = Array.isArray(project.tables)
+              ? project.tables
+              : project.table
+                ? [project.table]
+                : [];
+
             if (!url) {
-              console.error(`❌ ${name}: faltando url.`);
-              failed++;
+              logError(`${name}: faltando url.`);
               continue;
             }
 
             if (!anonKey) {
-              console.warn(`⚠️ ${name}: sem anonKey/publishable key. Projeto ignorado.`);
-              skipped++;
+              logSkip(`${name}: sem anonKey/publishable key. Projeto ignorado.`);
               continue;
             }
 
+            const supabase = createClient(url, anonKey, {
+              auth: {
+                persistSession: false,
+                autoRefreshToken: false
+              }
+            });
+
+            // 1) Ping no banco de dados, se tiver tabela configurada
+            for (const table of tables) {
+              try {
+                const { error } = await supabase
+                  .from(table)
+                  .select("*")
+                  .limit(1);
+
+                if (error) {
+                  logError(`${name} / tabela ${table}: falha no SELECT.`, error);
+                } else {
+                  logOk(`${name} / tabela ${table}: SELECT executado.`);
+                }
+              } catch (error) {
+                logError(`${name} / tabela ${table}: falha inesperada no SELECT.`, error);
+              }
+            }
+
+            // 2) Upload + list + delete no Storage
             if (buckets.length === 0) {
-              console.warn(`⚠️ ${name}: nenhum bucket informado. Projeto ignorado.`);
-              skipped++;
+              logSkip(`${name}: nenhum bucket informado para Storage.`);
               continue;
             }
 
             for (const bucket of buckets) {
-              const endpoint = `${url}/storage/v1/object/list/${encodeURIComponent(bucket)}`;
+              const filePath = `_keepalive/keepalive-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+              const fileContent = `keepalive ${name} ${bucket} ${new Date().toISOString()}`;
 
               try {
-                const response = await fetch(endpoint, {
-                  method: "POST",
-                  headers: {
-                    "apikey": anonKey,
-                    "Authorization": `Bearer ${anonKey}`,
-                    "Content-Type": "application/json"
-                  },
-                  body: JSON.stringify({
-                    prefix: "",
+                const { error: uploadError } = await supabase
+                  .storage
+                  .from(bucket)
+                  .upload(filePath, fileContent, {
+                    contentType: "text/plain",
+                    upsert: false
+                  });
+
+                if (uploadError) {
+                  logError(`${name} / ${bucket}: falha ao enviar arquivo.`, uploadError);
+                  continue;
+                }
+
+                logOk(`${name} / ${bucket}: arquivo criado.`);
+
+                const { error: listError } = await supabase
+                  .storage
+                  .from(bucket)
+                  .list("_keepalive", {
                     limit: 1,
                     offset: 0
-                  })
-                });
+                  });
 
-                const text = await response.text();
-
-                if (response.ok) {
-                  console.log(`✅ ${name} / ${bucket}: OK`);
-                  success++;
+                if (listError) {
+                  logError(`${name} / ${bucket}: falha ao listar pasta _keepalive.`, listError);
                 } else {
-                  console.error(`❌ ${name} / ${bucket}: HTTP ${response.status}`);
-                  console.error(text);
-                  failed++;
+                  logOk(`${name} / ${bucket}: listagem executada.`);
+                }
+
+                const { error: removeError } = await supabase
+                  .storage
+                  .from(bucket)
+                  .remove([filePath]);
+
+                if (removeError) {
+                  logError(`${name} / ${bucket}: arquivo criado, mas falhou ao apagar.`, removeError);
+                } else {
+                  logOk(`${name} / ${bucket}: arquivo apagado.`);
                 }
               } catch (error) {
-                console.error(`❌ ${name} / ${bucket}: falha ao acessar.`);
-                console.error(error);
-                failed++;
+                logError(`${name} / ${bucket}: falha inesperada no Storage.`, error);
               }
             }
           }
 
           console.log("");
-          console.log(`Resumo: ${success} acesso(s) OK, ${skipped} ignorado(s), ${failed} erro(s).`);
+          console.log(`Resumo: ${success} operação(ões) OK, ${skipped} ignorado(s), ${failed} erro(s).`);
 
           if (failed > 0) {
             process.exit(1);
