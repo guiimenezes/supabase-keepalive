@@ -12,21 +12,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Usar Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Instalar Supabase JS
-        run: npm install @supabase/supabase-js
-
       - name: Criar e apagar arquivo nos buckets
         env:
           SUPABASE_PROJECTS: ${{ secrets.SUPABASE_PROJECTS }}
         run: |
           node <<'NODE'
-          const { createClient } = require("@supabase/supabase-js");
-
           async function main() {
             const projects = JSON.parse(process.env.SUPABASE_PROJECTS || "[]");
 
@@ -48,11 +38,16 @@ jobs:
               skipped++;
             }
 
-            function fail(message, error) {
+            async function fail(message, response) {
               console.error(`ERRO ${message}`);
 
-              if (error) {
-                console.error(JSON.stringify(error, null, 2));
+              if (response) {
+                try {
+                  const text = await response.text();
+                  console.error(text);
+                } catch (error) {
+                  console.error(error);
+                }
               }
 
               failed++;
@@ -70,7 +65,8 @@ jobs:
                   : [];
 
               if (!url) {
-                fail(`${name}: faltando url.`);
+                console.error(`ERRO ${name}: faltando url.`);
+                failed++;
                 continue;
               }
 
@@ -84,60 +80,75 @@ jobs:
                 continue;
               }
 
-              const supabase = createClient(url, anonKey, {
-                auth: {
-                  persistSession: false,
-                  autoRefreshToken: false
-                }
-              });
-
               for (const bucket of buckets) {
                 const fileName = `keepalive-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
                 const filePath = `_keepalive/${fileName}`;
                 const fileContent = `keepalive ${name} / ${bucket} / ${new Date().toISOString()}`;
 
-                try {
-                  const { error: uploadError } = await supabase
-                    .storage
-                    .from(bucket)
-                    .upload(filePath, fileContent, {
-                      contentType: "text/plain",
-                      upsert: false
-                    });
+                const encodedPath = filePath
+                  .split("/")
+                  .map(encodeURIComponent)
+                  .join("/");
 
-                  if (uploadError) {
-                    fail(`${name} / ${bucket}: falha ao criar arquivo.`, uploadError);
+                const uploadEndpoint = `${url}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`;
+                const listEndpoint = `${url}/storage/v1/object/list/${encodeURIComponent(bucket)}`;
+                const deleteEndpoint = `${url}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`;
+
+                const headers = {
+                  "apikey": anonKey,
+                  "Authorization": `Bearer ${anonKey}`
+                };
+
+                try {
+                  const uploadResponse = await fetch(uploadEndpoint, {
+                    method: "POST",
+                    headers: {
+                      ...headers,
+                      "Content-Type": "text/plain"
+                    },
+                    body: fileContent
+                  });
+
+                  if (!uploadResponse.ok) {
+                    await fail(`${name} / ${bucket}: falha ao criar arquivo. HTTP ${uploadResponse.status}`, uploadResponse);
                     continue;
                   }
 
                   ok(`${name} / ${bucket}: arquivo criado.`);
 
-                  const { error: listError } = await supabase
-                    .storage
-                    .from(bucket)
-                    .list("_keepalive", {
+                  const listResponse = await fetch(listEndpoint, {
+                    method: "POST",
+                    headers: {
+                      ...headers,
+                      "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                      prefix: "_keepalive",
                       limit: 1,
                       offset: 0
-                    });
+                    })
+                  });
 
-                  if (listError) {
-                    fail(`${name} / ${bucket}: falha ao listar pasta _keepalive.`, listError);
+                  if (!listResponse.ok) {
+                    await fail(`${name} / ${bucket}: falha ao listar pasta _keepalive. HTTP ${listResponse.status}`, listResponse);
                   } else {
                     ok(`${name} / ${bucket}: pasta _keepalive listada.`);
                   }
 
-                  const { error: removeError } = await supabase
-                    .storage
-                    .from(bucket)
-                    .remove([filePath]);
+                  const deleteResponse = await fetch(deleteEndpoint, {
+                    method: "DELETE",
+                    headers
+                  });
 
-                  if (removeError) {
-                    fail(`${name} / ${bucket}: arquivo criado, mas falhou ao apagar.`, removeError);
+                  if (!deleteResponse.ok) {
+                    await fail(`${name} / ${bucket}: arquivo criado, mas falhou ao apagar. HTTP ${deleteResponse.status}`, deleteResponse);
                   } else {
                     ok(`${name} / ${bucket}: arquivo apagado.`);
                   }
                 } catch (error) {
-                  fail(`${name} / ${bucket}: falha inesperada.`, error);
+                  console.error(`ERRO ${name} / ${bucket}: falha inesperada.`);
+                  console.error(error);
+                  failed++;
                 }
               }
             }
